@@ -411,7 +411,7 @@ class Keg
   end
 
   def to_formula
-    Formulary.from_keg(self)
+    Formulary.from_installed(name)
   end
 
   def oldname_opt_records

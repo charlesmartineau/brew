@@ -551,7 +551,7 @@ module Formulary
     else
       rack = to_rack(name)
       alias_path = factory(name, force_bottle:, flags:, prefer_stub:).alias_path
-      f = from_rack(rack, *spec, alias_path:, force_bottle:, flags:)
+      f = from_rack(rack, *spec, alias_path:, force_bottle:, flags:, prefer_stub:)
     end
 
     # If this formula was installed with an alias that has since changed,
@@ -949,9 +949,15 @@ module Formulary
     def self.try_new(ref, from: nil, warn: false)
       ref = ref.to_s
 
-      return unless (keg_formula = HOMEBREW_PREFIX/"opt/#{ref}/.brew/#{ref}.rb").file?
+      keg_directory = HOMEBREW_PREFIX/"opt/#{ref}"
+      return unless keg_directory.directory?
 
-      new(ref, keg_formula)
+      # The formula file in `.brew` will use the canonical name, whereas `ref` can be an alias.
+      # Use `Keg#name` to get the canonical name.
+      keg = Keg.new(keg_directory)
+      return unless (keg_formula = HOMEBREW_PREFIX/"opt/#{ref}/.brew/#{keg.name}.rb").file?
+
+      new(keg.name, keg_formula)
     end
   end
 
@@ -1067,7 +1073,12 @@ module Formulary
 
     sig { overridable.params(flags: T::Array[String]).void }
     def load_from_api(flags:)
-      json_formula = Homebrew::API::Formula.all_formulae[name]
+      json_formula = if Homebrew::EnvConfig.use_internal_api?
+        Homebrew::API::Formula.formula_json(name)
+      else
+        Homebrew::API::Formula.all_formulae[name]
+      end
+
       raise FormulaUnavailableError, name if json_formula.nil?
 
       Formulary.load_formula_from_json!(name, json_formula, flags:)
@@ -1177,9 +1188,10 @@ module Formulary
       alias_path:   T.any(NilClass, Pathname, String),
       force_bottle: T::Boolean,
       flags:        T::Array[String],
+      prefer_stub:  T::Boolean,
     ).returns(Formula)
   }
-  def self.from_rack(rack, spec = nil, alias_path: nil, force_bottle: false, flags: [])
+  def self.from_rack(rack, spec = nil, alias_path: nil, force_bottle: false, flags: [], prefer_stub: false)
     kegs = rack.directory? ? rack.subdirs.map { |d| Keg.new(d) } : []
     keg = kegs.find(&:linked?) || kegs.find(&:optlinked?) || kegs.max_by(&:scheme_and_version)
 
@@ -1187,6 +1199,7 @@ module Formulary
       alias_path:,
       force_bottle:,
       flags:,
+      prefer_stub:,
     }.compact
 
     if keg
@@ -1199,7 +1212,7 @@ module Formulary
   # Return whether given rack is keg-only.
   sig { params(rack: Pathname).returns(T::Boolean) }
   def self.keg_only?(rack)
-    Formulary.from_rack(rack).keg_only?
+    Formulary.from_installed(rack.basename.to_s).keg_only?
   rescue FormulaUnavailableError, TapFormulaAmbiguityError
     false
   end
@@ -1213,6 +1226,7 @@ module Formulary
       alias_path:   T.any(NilClass, Pathname, String),
       force_bottle: T::Boolean,
       flags:        T::Array[String],
+      prefer_stub:  T::Boolean,
     ).returns(Formula)
   }
   def self.from_keg(
@@ -1220,7 +1234,8 @@ module Formulary
     spec = nil,
     alias_path: nil,
     force_bottle: false,
-    flags: []
+    flags: [],
+    prefer_stub: false
   )
     tab = keg.tab
     tap = tab.tap
@@ -1234,6 +1249,7 @@ module Formulary
       warn:         false,
       force_bottle:,
       flags:,
+      prefer_stub:,
     }.compact
 
     f = if tap.nil?
@@ -1250,6 +1266,30 @@ module Formulary
     T.cast(f.build, Tab).used_options = Tab.remap_deprecated_options(f.deprecated_options, tab.used_options).as_flags
     f.version.update_commit(keg.version.version.commit) if f.head? && keg.version.head?
     f
+  end
+
+  sig {
+    params(
+      name:          String,
+      spec:          Symbol,
+      alias_path:    T.nilable(Pathname),
+      force_bottle:  T::Boolean,
+      flags:         T::Array[String],
+      ignore_errors: T::Boolean,
+    ).returns(Formula)
+  }
+  def self.from_installed(
+    name,
+    spec = :stable,
+    alias_path: nil,
+    force_bottle: false,
+    flags: [],
+    ignore_errors: false
+  )
+    loader = FromKegLoader.try_new(name, warn: false)
+    raise FormulaUnavailableError, name unless loader
+
+    loader.get_formula(spec, alias_path:, force_bottle:, flags:, ignore_errors:)
   end
 
   # Return a {Formula} instance directly from contents.

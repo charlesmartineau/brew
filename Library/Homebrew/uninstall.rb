@@ -32,7 +32,7 @@ module Homebrew
         else
           kegs.each do |keg|
             begin
-              f = Formulary.from_rack(rack)
+              f = Formulary.from_installed(keg.name)
               if f.pinned?
                 onoe "#{f.full_name} is pinned. You must unpin it to uninstall."
                 break # exit keg loop and move on to next rack
@@ -157,7 +157,7 @@ module Homebrew
     end
 
     def self.rm_pin(rack)
-      Formulary.from_rack(rack).unpin
+      Formulary.from_installed(rack.basename.to_s).unpin
     rescue
       nil
     end
